@@ -13,11 +13,11 @@ from detectron2.utils.registry import Registry
 
 from detectron2.modeling.backbone.resnet import BottleneckBlock, make_stage
 from detectron2.modeling.matcher import Matcher
-from detectron2.modeling.poolers import ROIPooler
+from ..poolers import DiscriminativeRoIPooling
 from detectron2.modeling.proposal_generator.proposal_utils import add_ground_truth_to_proposals
 from detectron2.modeling.sampling import subsample_labels
 from .box_head import build_box_head
-from detectron2.modeling.roi_heads.fast_rcnn import FastRCNNOutputLayers
+from .fast_rcnn import FastRCNNOutputLayers
 from detectron2.modeling.roi_heads.keypoint_head import build_keypoint_head
 from detectron2.modeling.roi_heads.mask_head import build_mask_head
 
@@ -361,7 +361,7 @@ class Res5ROIHeads(ROIHeads):
         assert not cfg.MODEL.KEYPOINT_ON
         assert len(self.in_features) == 1
 
-        self.pooler = ROIPooler(
+        self.pooler = DiscriminativeRoIPooling(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
@@ -472,7 +472,7 @@ class Res5ROIHeads(ROIHeads):
 
 
 @ROI_HEADS_REGISTRY.register()
-class StandardROIHeads(ROIHeads):
+class D2DetROIHeads(ROIHeads):
     """
     It's "standard" in a sense that there is no ROI transform sharing
     or feature sharing between tasks.
@@ -507,7 +507,7 @@ class StandardROIHeads(ROIHeads):
         assert len(set(in_channels)) == 1, in_channels
         in_channels = in_channels[0]
 
-        self.box_pooler = ROIPooler(
+        self.box_pooler = DiscriminativeRoIPooling(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
@@ -516,10 +516,14 @@ class StandardROIHeads(ROIHeads):
         # Here we split "box head" and "box predictor", which is mainly due to historical reasons.
         # They are used together so the "box predictor" layers should be part of the "box head".
         # New subclasses of ROIHeads do not need "box predictor"s.
+        # 修改D2Det在这里
         self.box_head = build_box_head(
             cfg, ShapeSpec(channels=in_channels, height=pooler_resolution, width=pooler_resolution)
         )
         self.box_predictor = FastRCNNOutputLayers(cfg, self.box_head.output_shape)
+        # 在D2Det中 box没有进过roi pooling 处理而是RPN输出特征经卷积后得到的特征图进入局部密集回归中处理 然后的得到loc 损失
+
+        # cls分类是经过类似激励和挤压的 DiscriminativeRoIPooling处理后 使用AWP处理在经过全连接网络
 
     def _init_mask_head(self, cfg, input_shape):
         # fmt: off
@@ -534,7 +538,7 @@ class StandardROIHeads(ROIHeads):
 
         in_channels = [input_shape[f].channels for f in self.in_features][0]
 
-        self.mask_pooler = ROIPooler(
+        self.mask_pooler = DiscriminativeRoIPooling(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
@@ -557,7 +561,7 @@ class StandardROIHeads(ROIHeads):
 
         in_channels = [input_shape[f].channels for f in self.in_features][0]
 
-        self.keypoint_pooler = ROIPooler(
+        self.keypoint_pooler = DiscriminativeRoIPooling(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
@@ -645,6 +649,8 @@ class StandardROIHeads(ROIHeads):
             In inference, a list of `Instances`, the predicted instances.
         """
         features = [features[f] for f in self.in_features]
+
+        # cls预测
         box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
         box_features = self.box_head(box_features)
         predictions = self.box_predictor(box_features)
